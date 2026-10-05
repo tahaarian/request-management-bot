@@ -6,6 +6,10 @@ const { getDb, isProcessed, upsertRequest, logPoll } = require('../db');
 const config = require('../config');
 const logger = require('../utils/logger');
 
+// Confirmed field ID for bizId from FAMS FieldsInfo array (FieldId: 27079).
+// Falls back to hardcoded value if not set in config.
+const BIZ_ID_FIELD_ID = config.bizFieldId || 27079;
+
 /** Check if our discussion text already exists in the discussion list */
 function hasOurDiscussion(discussions) {
   return discussions.some(
@@ -13,11 +17,27 @@ function hasOurDiscussion(discussions) {
   );
 }
 
-/** Extract the business ID from request info using the configured field ID */
+/**
+ * Extract the business ID from request info.
+ *
+ * The FAMS API returns FieldsInfo items with the key "FieldId" (PascalCase),
+ * NOT "Id" as the Swagger schema suggests. We check both to be safe.
+ *
+ * @param {object|null} requestInfo  — Result from getRequestInfo()
+ * @returns {string|null}
+ */
 function extractBizId(requestInfo) {
-  if (!config.bizFieldId || !requestInfo?.FieldsInfo) return null;
-  const field = requestInfo.FieldsInfo.find((f) => f.Id === config.bizFieldId);
-  return field ? String(field.Value || '').trim() : null;
+  const fieldsInfo = requestInfo?.FieldsInfo;
+  if (!Array.isArray(fieldsInfo) || fieldsInfo.length === 0) return null;
+
+  const field = fieldsInfo.find(
+    // API reality: FieldId. Swagger schema says: Id. Check both.
+    (f) => (f.FieldId ?? f.Id ?? f.fieldId) === BIZ_ID_FIELD_ID
+  );
+  if (!field) return null;
+
+  const value = String(field.Value ?? field.value ?? '').trim();
+  return value || null;
 }
 
 /** Process a single request: add discussion + label if not already done */
@@ -49,18 +69,26 @@ async function processRequest(requestItem) {
 
   logger.info(`Processing request ${workItemId} (PId: ${workItemPId}, state: ${stateId})`);
 
-  // Fetch full info to resolve biz field + account manager
-  let bizId = null;
+  // Fetch full info to resolve bizId + account manager
+  let bizId          = null;
   let accountManager = null;
   try {
     const requestInfo = await getRequestInfo(workItemId, workItemPId, projectId);
     bizId = extractBizId(requestInfo);
-    accountManager = getAccountManager(bizId);
+
+    if (bizId) {
+      accountManager = getAccountManager(bizId);
+      logger.info(`Request ${workItemId}: bizId=${bizId}, accountManager=${accountManager ?? 'not found'}`);
+    } else {
+      logger.warn(`Request ${workItemId}: bizId not found in FieldsInfo (FieldId ${BIZ_ID_FIELD_ID})`);
+    }
   } catch (err) {
     logger.error(`Failed to fetch info for request ${workItemId}:`, err.message);
   }
 
-  // Check for duplicate discussion
+  // ── Discussion ────────────────────────────────────────────────────────────
+
+  // Check for existing discussion before adding
   if (!discussionAdded) {
     try {
       const discussions = await listDiscussions(workItemPId, projectId);
@@ -73,7 +101,6 @@ async function processRequest(requestItem) {
     }
   }
 
-  // Add discussion
   if (!discussionAdded) {
     try {
       await addDiscussion(workItemPId, config.discussion.text);
@@ -84,7 +111,8 @@ async function processRequest(requestItem) {
     }
   }
 
-  // Add label
+  // ── Label ─────────────────────────────────────────────────────────────────
+
   if (!labelAdded && accountManager) {
     try {
       await addLabel(workItemId, accountManager);
@@ -94,7 +122,9 @@ async function processRequest(requestItem) {
       logger.error(`Failed to add label to request ${workItemId}:`, err.message);
     }
   } else if (!labelAdded && !accountManager) {
-    logger.warn(`Request ${workItemId}: no account manager for bizId="${bizId}", skipping label`);
+    logger.warn(
+      `Request ${workItemId}: no account manager for bizId="${bizId ?? 'null'}", skipping label`
+    );
   }
 
   upsertRequest({
@@ -108,10 +138,10 @@ async function pollAndProcess() {
   // Ensure DB is ready (no-op after first call)
   await getDb();
 
-  const pollStart     = new Date().toISOString();
-  let newCount        = 0;
-  let processedCount  = 0;
-  let pollError       = null;
+  const pollStart    = new Date().toISOString();
+  let newCount       = 0;
+  let processedCount = 0;
+  let pollError      = null;
 
   try {
     logger.info('Polling request list...');
@@ -119,9 +149,9 @@ async function pollAndProcess() {
     logger.info(`Fetched ${requests.length} requests`);
 
     for (const req of requests) {
-      const workItemId  = req.Id;
-      const stateId     = req.StateInfo?.Id || req.StateId || 0;
-      const existing    = isProcessed(workItemId);
+      const workItemId = req.Id;
+      const stateId    = req.StateInfo?.Id || req.StateId || 0;
+      const existing   = isProcessed(workItemId);
 
       if (!existing) newCount++;
 
