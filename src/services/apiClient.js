@@ -4,7 +4,7 @@ const logger = require('../utils/logger');
 
 const apiClient = axios.create({
   baseURL: config.api.baseUrl,
-  timeout: 15000,
+  timeout: 60000,
   headers: {
     'Content-Type': 'application/json',
     token: config.api.token,
