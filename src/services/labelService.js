@@ -1,4 +1,5 @@
 const apiClient = require('./apiClient');
+const logger = require('../utils/logger');
 const config = require('../config');
 
 /**
@@ -9,13 +10,14 @@ const config = require('../config');
 async function addLabel(workItemId, labelName) {
   const body = {
     WorkItemId: workItemId,
-    LabelNames: labelName,
-    LabelIds: [],
+    LabelNames: [labelName], // must be string[], not string
   };
 
   if (config.discussion.creatorSsoId) {
     body.CreatorSsoId = config.discussion.creatorSsoId;
   }
+
+  logger.debug(`addLabel payload: ${JSON.stringify(body)}`);
 
   const response = await apiClient.post('/Biz/Label/Add', body);
   const data = response.data;

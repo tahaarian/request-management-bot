@@ -1,4 +1,5 @@
 const apiClient = require('./apiClient');
+const logger = require('../utils/logger');
 const config = require('../config');
 
 /**
@@ -15,6 +16,8 @@ async function addDiscussion(workItemPId, content) {
   if (config.discussion.creatorSsoId) {
     body.CreatorSsoId = config.discussion.creatorSsoId;
   }
+
+  logger.debug(`addDiscussion payload: ${JSON.stringify(body)}`);
 
   const response = await apiClient.post('/Biz/Discussion/Add', body);
   const data = response.data;
